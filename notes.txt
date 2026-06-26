@@ -1,8 +1,0 @@
-so we are making a shell in c , no idea what im doing btw
-
-we print directory and print prompt >>> using takeInput function 
-getcwd gives the dircetory 
-if  fgets returns null (ctrl d or read error) we print error and exit 
-else we set \n at end of string to 0
-
-and we are parsing based on " " spaces or until 
