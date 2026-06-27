@@ -3,6 +3,8 @@
 #include<string.h>
 #include<unistd.h>
 #include<sys/wait.h>
+#include<fcntl.h>
+#include<signal.h>
 
 #define MAX_INPUT 1024 //max user input
 #define MAX_ARGS 64   // max arguments 
@@ -16,11 +18,12 @@ void takeInput(char *input)
         perror("getcwd failed");
         exit(1);
     }
-
+    printf("\033[1;32m"); // change color to green 
     printf("\nDIR:%s" , cwd);
     
     printf(">> ");
     fflush(stdout);
+    printf("\033[0m"); // reset color 
 
     if(fgets(input,MAX_INPUT,stdin) == NULL)
     {
@@ -83,6 +86,12 @@ void executeCommand(char **args)
 {
     pid_t pid = fork();
 
+    if(pid < 0)
+    {
+        perror("process failed");
+        exit(1);
+    }
+
     if(pid == 0)
     {
         execvp(args[0],args);
@@ -98,9 +107,15 @@ void executePiped(char **arg1 , char **arg2)
 {
     int pipes[2];
     pipe(pipes);
-
+    
     pid_t p1 = fork();
     
+    if(p1 < 0)
+    {
+        perror("process failed");
+        exit(1);
+    }
+
     if(p1 == 0)
     {
         dup2(pipes[1] , STDOUT_FILENO);
@@ -112,6 +127,13 @@ void executePiped(char **arg1 , char **arg2)
     }
 
     pid_t p2 = fork();
+
+    if(p2 < 0)
+    {
+        perror("process failed");
+        exit(1);
+    }
+
     if(p2 == 0)
     {
         dup2(pipes[0],STDIN_FILENO);
@@ -147,24 +169,141 @@ int parsePipe(char *input,char **left,char **right)
     *left = input;
     *right = pipeFound;
 
-    return 0; 
+    return 0; //pipe exists
+}
+
+int checkRedirect(char *input,char **left,char **right)
+{
+    char *append = strstr(input , ">>");
+    char *output = NULL;
+
+    if(!append)
+    {
+        output = strchr(input , '>');
+    }
+
+    char *inputR = strchr(input , '<');
+    
+    if(output)
+    {
+        *output = '\0';
+        output++;
+        while(*output == ' ')
+        {
+            output++;
+        }
+        *left = input;
+        *right = output;
+        return 1;
+    } else if(inputR)
+    {
+        *inputR = '\0';
+        inputR++;
+        while(*inputR == ' ')
+        {
+            inputR++;
+        }
+        *left = input;
+        *right = inputR;
+        return 2;
+    } else if(append)
+    {
+        *append = '\0';
+        append += 2;
+        while(*append == ' ')
+        {
+            append++;
+        }
+        *left = input;
+        *right = append;
+        return 3;
+    } else 
+    {
+        return 0;
+    }
+}
+
+void handleRedirect(char *command,char *filename,int type)
+{
+    int fileD;
+    pid_t pid = fork();
+    if(pid < 0)
+    {
+        perror("fork failed");
+        exit(1);
+    }
+    if(pid == 0)
+    {
+        if(type == 1)
+        {
+            fileD = open(filename , O_CREAT | O_TRUNC | O_WRONLY , 0644);
+
+            if(fileD < 0) { 
+                perror("open failed");
+                exit(1);
+            }
+            dup2(fileD , STDOUT_FILENO);
+            close(fileD);
+        }
+        else if(type == 2)
+        {
+            fileD = open(filename, O_RDONLY , 0644);
+            if(fileD < 0) { 
+                perror("open failed");
+                exit(1);
+            }
+            dup2(fileD , STDIN_FILENO);
+            close(fileD);
+        }
+        else if(type == 3)
+        {
+            fileD = open(filename , O_APPEND | O_CREAT | O_WRONLY , 0644);
+            if(fileD < 0) { 
+                perror("open failed");
+                exit(1);
+            }
+            dup2(fileD , STDOUT_FILENO);
+            close(fileD);
+        }
+        else 
+        {
+            perror("unknown redirect type");
+            exit(1);
+        }
+
+        char *args[MAX_ARGS];
+        parseInput(command, args);
+        execvp(args[0], args);
+        perror("command failed");
+        exit(1);
+    }
+    wait(NULL);
+}
+
+void handleSigint(int sig)
+{
+    printf("\033[1;32m"); // change color to green 
+    printf("\nDIR:%s" , getenv("PWD"));
+    
+    printf(">> ");
+    printf("\033[0m"); 
+    fflush(stdout);
+    
 }
 
 int main()
 {
     char input[MAX_INPUT];
-    
     printf("WELCOME TO MY SHELL!!!!\n");
+    signal(SIGINT , handleSigint);
     while(1)
     {
-        
         takeInput(input);
 
         if(strlen(input) == 0)
         {
             continue;
         }
-
         char *left , *right;
         char *arg1[MAX_ARGS] , *arg2[MAX_ARGS];
         char *args[MAX_ARGS];
@@ -176,16 +315,22 @@ int main()
 
             executePiped(arg1,arg2);
         } else{
+            int rd = checkRedirect(input, &left , &right);
+            if(rd)
+            {
+                handleRedirect(left,right,rd);
+                continue;
+            }
+
             parseInput(input, args);
 
             if(builtInCommands(args) == 1)
             {
                 continue;
             }
-
+            
             executeCommand(args);
         }
-        
     }
     return 0;
 }
