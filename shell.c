@@ -282,7 +282,7 @@ void handleRedirect(char *command,char *filename,int type)
 
 void handleSigint(int sig)
 {
-    printf("\033[1;32m"); // change color to green 
+    printf("\033[1;32m"); 
     printf("\nDIR:%s" , getenv("PWD"));
     
     printf(">> ");
