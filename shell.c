@@ -5,11 +5,12 @@
 #include<sys/wait.h>
 #include<fcntl.h>
 #include<signal.h>
+#include<errno.h>
 
 #define MAX_INPUT 1024 //max user input
 #define MAX_ARGS 64   // max arguments 
 
-void takeInput(char *input)
+int takeInput(char *input)
 {
     char cwd[MAX_INPUT];
 
@@ -24,13 +25,30 @@ void takeInput(char *input)
     printf(">> ");
     fflush(stdout);
     printf("\033[0m"); // reset color 
-
-    if(fgets(input,MAX_INPUT,stdin) == NULL)
+    while(1)
     {
+        if(fgets(input,MAX_INPUT,stdin) != NULL)
+        {
+            break;
+        }
+        if(errno == EINTR)
+        {
+            clearerr(stdin);
+            continue;
+        }
         exit(1);
+
     }
+    
 
     input[strcspn(input,"\n")] = 0; // remove newline 
+
+    if (input[strlen(input) - 1] == '&')
+    {
+        input[strlen(input) - 1] = '\0';
+        return 1;
+    }
+    return 0;
 
 }
 
@@ -82,7 +100,7 @@ int builtInCommands(char **args) //for handling cd , exit ,help
 }
 
 //executing a non piped command
-void executeCommand(char **args)
+void executeCommand(char **args , int background)
 {
     pid_t pid = fork();
 
@@ -98,7 +116,9 @@ void executeCommand(char **args)
         perror("command not found!");
         exit(1);
     } else {
-        wait(NULL);
+        if(background == 0){
+            wait(NULL);
+        }
     }
 }
 
@@ -291,15 +311,22 @@ void handleSigint(int sig)
     
 }
 
+void handleSigchld(int sig)
+{
+    // reap all dead children without blocking
+    while(waitpid(-1, NULL, WNOHANG) > 0);
+}
+
 int main()
 {
     char input[MAX_INPUT];
-    printf("WELCOME TO MY SHELL!!!!\n");
+    printf("\t\t\tWELCOME TO MY SHELL!!!!\n");
     signal(SIGINT , handleSigint);
+    signal(SIGCHLD , handleSigchld);
     while(1)
     {
-        takeInput(input);
-
+        
+        int bg = takeInput(input);
         if(strlen(input) == 0)
         {
             continue;
@@ -329,7 +356,7 @@ int main()
                 continue;
             }
             
-            executeCommand(args);
+            executeCommand(args,bg);
         }
     }
     return 0;
