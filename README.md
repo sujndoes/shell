@@ -1,17 +1,23 @@
 # shell
 
-A small Unix shell written in C. It runs programs, supports a single pipe, handles input and output redirection, and can run commands in the background.
+[![CI](https://github.com/sujndoes/shell/actions/workflows/ci.yml/badge.svg)](https://github.com/sujndoes/shell/actions/workflows/ci.yml)
+
+A small Unix shell written in C. It runs programs, supports pipelines of any length, combines pipes with redirection, expands variables, understands quoting, and runs commands in the background.
+
+<!-- TODO: add a terminal GIF here (record with asciinema or vhs) -->
 
 ## Features
 
 - Runs any program found on your `PATH`
-- Built-in commands: `cd`, `exit`, `help`
-- Pipes between two commands: `ls | wc -l`
-- Redirection: `>` (overwrite), `>>` (append), `<` (input)
-- Background execution with a trailing `&`
-- Colored prompt that shows the current directory
-- `Ctrl+C` redraws the prompt instead of closing the shell
-- Finished background jobs are cleaned up automatically
+- Built-in commands: `cd` (including `cd -`), `export`, `exit [code]`, `help`
+- **Pipelines of any length**: `cat log.txt | grep error | sort | uniq -c`
+- **Redirection**: `>` (overwrite), `>>` (append), `<` (input), usable together and combined with pipes: `sort < in.txt | uniq > out.txt`
+- **Quoting and escapes**: `echo "two   spaces"`, `echo 'literal $HOME'`, `echo a\ b`
+- **Expansion**: `$VAR`, `$?` (exit status of the last command), `~`
+- Background execution with a trailing `&`; finished jobs are reported and cleaned up
+- Ctrl+C stops the running command but not the shell; Ctrl+D exits
+- Colored prompt showing the current directory
+- Clear error messages (`shell: foo: No such file or directory`) and standard exit codes (127 not found, 126 not executable)
 
 ## Requirements
 
@@ -20,56 +26,74 @@ A small Unix shell written in C. It runs programs, supports a single pipe, handl
 
 ## Build and run
 
-```bash
+```sh
 git clone https://github.com/sujndoes/shell.git
 cd shell
-gcc -Wall -o shell shell.c
+make
 ./shell
 ```
-
-Adjust `shell.c` to match the name of the source file in the repository.
 
 ## Usage
 
 ```
-DIR:/home/user>> ls -l
+DIR:/home/user>> ls -l | wc -l
 DIR:/home/user>> cd projects
-DIR:/home/user/projects>> cat notes.txt | grep todo
-DIR:/home/user/projects>> echo hello > out.txt
-DIR:/home/user/projects>> echo world >> out.txt
-DIR:/home/user/projects>> sort < out.txt
+DIR:/home/user/projects>> cat notes.txt | grep todo | sort > todos.txt
+DIR:/home/user/projects>> export NAME=world
+DIR:/home/user/projects>> echo "hello $NAME" >> greeting.txt
+DIR:/home/user/projects>> false
+DIR:/home/user/projects>> echo $?
+1
 DIR:/home/user/projects>> sleep 30 &
+[background] pid 4242
 DIR:/home/user/projects>> exit
 ```
 
-### Built-in commands
-
-| Command | Description |
-|---------|-------------|
-| `cd [dir]` | Change directory. With no argument, goes to `$HOME`. |
-| `exit` | Quit the shell. |
-| `help` | Placeholder for now. |
-
 ## How it works
 
+Each line goes through three stages: **parse**, **execute**, **clean up**.
+
 | Function | Role |
-|----------|------|
-| `takeInput` | Prints the prompt, reads a line, and detects a trailing `&` |
-| `parseInput` | Splits a command line into arguments with `strtok` |
-| `builtInCommands` | Handles `cd`, `exit`, and `help` in the shell process |
-| `executeCommand` | Forks and runs a command with `execvp` |
-| `parsePipe` / `executePiped` | Splits a line on `\|` and connects two children with `pipe` and `dup2` |
-| `checkRedirect` / `handleRedirect` | Finds `>`, `>>`, or `<` and rewires stdout or stdin before `execvp` |
-| `handleSigint` / `handleSigchld` | Redraws the prompt on `Ctrl+C` and reaps finished child processes |
+|---|---|
+| `takeInput` | Prints the prompt, reads a line, rejects over-long input, handles Ctrl+C / Ctrl+D |
+| `parseInput` / `readWord` | Tokenizes the line (quotes, escapes, `$VAR`, `~`) into a `Pipeline`: a list of `Command`s, each with its own `argv`, input file and output file |
+| `builtInCommands` | Runs `cd`, `export`, `exit`, `help` inside the shell process (they must change the shell's own state) |
+| `executePipeline` | Forks one child per command, connects neighbours with `pipe` + `dup2`, and waits for exactly those children with `waitpid` |
+| `applyRedirect` | In the child: opens the file and puts it on stdin or stdout with `dup2` |
+| `reapBackground` | Collects finished background jobs between commands |
 
-## Limitations
+### Design notes
 
-- Only one pipe per line, so `a | b | c` is not supported
-- Pipes and redirection cannot be combined in the same command
-- One redirection per command
-- Arguments are split on spaces only. Quotes, escapes, wildcards, and environment variable expansion are not handled.
-- Background mode with `&` works for simple commands only
-- Input is limited to 1024 characters and 64 arguments per command
+- **Parse into a struct first, then execute.** Pipes and redirections are properties of each `Command`, so any combination works without special cases.
+- **Foreground children are waited for by PID**, never with a blanket `wait()`. A finishing background job can therefore never be mistaken for the foreground command.
+- **No `SIGCHLD` handler.** Background jobs are reaped between commands instead, which avoids racing with the foreground `waitpid`.
+- **The Ctrl+C handler does nothing.** Its only job is to interrupt the blocked read so the shell redraws the prompt; it is trivially async-signal-safe. Children restore the default action, so Ctrl+C still kills them. Background jobs run in their own process group, so they survive it.
+- **Every limit is bounds-checked** (line length, word length, argument count, pipeline length) and reports an error instead of overflowing a buffer.
+
+## Testing
+
+```sh
+make test   # 25 end-to-end tests
+make asan   # the same tests under AddressSanitizer + UBSan
+```
+
+The tests feed commands to the shell on stdin and compare the output. They cover pipelines, every redirection form, quoting, expansion, exit codes, `cd`, error handling, and recovery after syntax errors. CI runs both targets on every push.
+
+## Limitations and roadmap
+
+- [x] Pipelines of any length
+- [x] Pipes and redirection in the same command, multiple redirections per command
+- [x] Quotes, escapes, `$VAR`, `$?`, `~`
+- [x] Automated tests, AddressSanitizer, CI
+- [ ] `;`, `&&`, `||`
+- [ ] Wildcard expansion (`*.c`)
+- [ ] Command substitution `$(...)`
+- [ ] Command history and line editing
+- [ ] Job control (`jobs`, `fg`, `bg`, Ctrl+Z)
+- [ ] File-descriptor redirection (`2>`, `2>&1`)
+- [ ] Pipes and redirection on built-ins (`cd`, `export`, ... only work as plain commands)
+
+Limits: 1023 characters per line, 63 arguments per command, 16 commands per pipeline.
 
 ## Contributing
 

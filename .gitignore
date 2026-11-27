@@ -1,0 +1,3 @@
+shell
+shell-asan
+*.o
